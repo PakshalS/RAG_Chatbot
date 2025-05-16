@@ -1,7 +1,7 @@
 "use client"
 
-import { useState, useEffect } from "react"
-import { FileText, AlertCircle, CheckCircle, Plus, Menu, X } from "lucide-react"
+import { useState, useEffect, useContext } from "react"
+import { FileText, AlertCircle, CheckCircle, Plus, Menu, X, LogOut } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
@@ -9,8 +9,12 @@ import { useMediaQuery } from "@/hooks/use-media-query"
 import ChatInterface from "@/components/chat-interface"
 import FileUpload from "@/components/file-upload"
 import ChatList from "@/components/chat-list"
+import { AuthContext } from "@/context/authcontext"
+import Cookies from "js-cookie"
+import useAuthRedirect from "@/context/useauthredirect"
 
 export default function PDFChatApp() {
+  useAuthRedirect();
   const [apiStatus, setApiStatus] = useState("checking")
   const [uploadStatus, setUploadStatus] = useState("idle")
   const [errorMessage, setErrorMessage] = useState(null)
@@ -18,6 +22,7 @@ export default function PDFChatApp() {
   const [chats, setChats] = useState([])
   const [currentChat, setCurrentChat] = useState(null)
   const [sidebarOpen, setSidebarOpen] = useState(true)
+  const { authData, logout } = useContext(AuthContext) // Use AuthContext with logout
 
   // Check if screen is mobile
   const isMobile = useMediaQuery("(max-width: 768px)")
@@ -46,7 +51,7 @@ export default function PDFChatApp() {
         setErrorMessage(
           error.name === "AbortError"
             ? "API request timed out"
-            : "API is not available. Please ensure the server is running.",
+            : "API is not available. Please ensure the server is running."
         )
       }
     }
@@ -63,10 +68,13 @@ export default function PDFChatApp() {
 
   const fetchChats = async () => {
     try {
-      const token = localStorage.getItem("token")
-      if (!token) return
+      const token = Cookies.get("authToken")
+      if (!token) {
+        setErrorMessage("Please log in to view chats")
+        return
+      }
 
-      const response = await fetch("http://localhost:5000/api/chats", {
+      const response = await fetch("http://localhost:3000/api/chats", {
         headers: {
           Authorization: `Bearer ${token}`,
         },
@@ -74,18 +82,20 @@ export default function PDFChatApp() {
 
       if (response.ok) {
         const data = await response.json()
-        setChats(data.chats || [])
+        setChats(data.chats.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)) || [])
+      } else {
+        const errorData = await response.json()
+        setErrorMessage(errorData.message || "Failed to fetch chats")
       }
     } catch (error) {
       console.error("Error fetching chats:", error)
+      setErrorMessage("Failed to fetch chats due to a network error")
     }
   }
 
   const createNewChat = () => {
     setChatHistory([])
     setCurrentChat(null)
-    // Just create the new chat without notification
-    // Close sidebar on mobile after creating a new chat
     if (isMobile) {
       setSidebarOpen(false)
     }
@@ -93,10 +103,13 @@ export default function PDFChatApp() {
 
   const selectChat = async (chatId) => {
     try {
-      const token = localStorage.getItem("token")
-      if (!token) return
+      const token = Cookies.get("authToken")
+      if (!token) {
+        setErrorMessage("Please log in to view chats")
+        return
+      }
 
-      const response = await fetch(`http://localhost:5000/api/chats/${chatId}`, {
+      const response = await fetch(`http://localhost:3000/api/chats/${chatId}`, {
         headers: {
           Authorization: `Bearer ${token}`,
         },
@@ -106,52 +119,101 @@ export default function PDFChatApp() {
         const data = await response.json()
         setChatHistory(data.chat.history || [])
         setCurrentChat(data.chat)
-        // Close sidebar on mobile after selecting a chat
         if (isMobile) {
           setSidebarOpen(false)
         }
+      } else {
+        const errorData = await response.json()
+        setErrorMessage(errorData.message || "Failed to load chat history")
       }
     } catch (error) {
       console.error("Error fetching chat:", error)
-      setErrorMessage("Failed to load chat history")
+      setErrorMessage("Failed to load chat history due to a network error")
     }
   }
 
-  const saveCurrentChat = async (chatName) => {
-    if (chatHistory.length === 0) return
+  const saveCurrentChat = async (history) => {
+    if (!history || history.length === 0) return
 
     try {
-      const token = localStorage.getItem("token")
+      const token = Cookies.get("authToken")
       if (!token) {
         setErrorMessage("Please log in to save chats")
         return
       }
 
-      const userId = JSON.parse(atob(token.split(".")[1])).userId
-      const chatId = currentChat?.chatId || `chat_${Date.now()}`
-
-      const response = await fetch("http://localhost:5000/api/chats", {
+      const response = await fetch("http://localhost:3000/api/chats/save", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
-          userId,
-          chatId,
-          chatName: chatName || `Chat ${chats.length + 1}`,
-          history: chatHistory,
+          chatId: currentChat?.chatId,
+          history,
         }),
       })
 
       if (response.ok) {
-        fetchChats()
+        const data = await response.json()
+        if (!currentChat) {
+          setCurrentChat({
+            chatId: data.chatId,
+            chatName: history.find((h) => h.role === "user")?.content?.substring(0, 50) || `Chat ${new Date().toISOString()}`,
+          })
+        }
+        await fetchChats()
+        return data.chatId
       } else {
-        setErrorMessage("Failed to save chat")
+        const errorData = await response.json()
+        setErrorMessage(errorData.message || "Failed to save chat")
       }
     } catch (error) {
       console.error("Error saving chat:", error)
-      setErrorMessage("Failed to save chat")
+      setErrorMessage("Failed to save chat due to a network error")
+    }
+  }
+
+  const handleAskQuestion = async (question) => {
+    try {
+      const token = Cookies.get("authToken")
+      if (!token) {
+        setErrorMessage("Please log in to ask questions")
+        return
+      }
+
+      const askResponse = await fetch("http://localhost:5000/api/ask", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          question,
+          token,
+          chatId: currentChat?.chatId,
+        }),
+      })
+
+      if (askResponse.ok) {
+        const { chat_history, chatId } = await askResponse.json()
+        setChatHistory(chat_history)
+
+        if (!currentChat && chatId) {
+          setCurrentChat({
+            chatId,
+            chatName: chat_history.find((h) => h.role === "user")?.content?.substring(0, 50) || `Chat ${new Date().toISOString()}`,
+          })
+        }
+
+        await fetchChats()
+      } else {
+        const errorData = await askResponse.json()
+        setErrorMessage(errorData.error || "Failed to process question")
+      }
+    } catch (error) {
+      console.error("Error asking question:", error)
+      setErrorMessage("Failed to process question due to a network error")
     }
   }
 
@@ -167,7 +229,15 @@ export default function PDFChatApp() {
           {sidebarOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
         </Button>
         <h1 className="text-xl font-bold">PDF Chat</h1>
-        <div className="w-10"></div> {/* Spacer for centering */}
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={logout}
+          aria-label="Log out"
+          className="hover:bg-muted"
+        >
+          <LogOut className="h-5 w-5" />
+        </Button>
       </div>
 
       {/* Sidebar - Collapsible on mobile */}
@@ -204,11 +274,22 @@ export default function PDFChatApp() {
             <h1 className="text-2xl font-bold">PDF Chat Application</h1>
           </div>
 
-          {currentChat && (
-            <div className="text-sm text-muted-foreground">
-              Current chat: <span className="font-medium">{currentChat.chatName}</span>
-            </div>
-          )}
+          <div className="flex items-center gap-4">
+            {currentChat && (
+              <div className="text-sm text-muted-foreground">
+                Current chat: <span className="font-medium">{currentChat.chatName}</span>
+              </div>
+            )}
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={logout}
+              aria-label="Log out"
+              className="hover:bg-muted"
+            >
+              <LogOut className="h-5 w-5" />
+            </Button>
+          </div>
         </div>
 
         {/* Main Content Area */}
@@ -237,14 +318,12 @@ export default function PDFChatApp() {
                     setUploadStatus={setUploadStatus}
                     setErrorMessage={setErrorMessage}
                   />
-
                   {uploadStatus === "success" && (
                     <div className="flex items-center gap-2 mt-4 text-green-600">
                       <CheckCircle className="h-4 w-4" />
                       <span>PDFs processed successfully!</span>
                     </div>
                   )}
-
                   {uploadStatus === "error" && (
                     <div className="flex items-center gap-2 mt-4 text-destructive">
                       <AlertCircle className="h-4 w-4" />
@@ -267,8 +346,9 @@ export default function PDFChatApp() {
                     chatHistory={chatHistory}
                     setChatHistory={setChatHistory}
                     setErrorMessage={setErrorMessage}
-                    onSaveChat={saveCurrentChat}
+                    onAskQuestion={handleAskQuestion}
                     currentChat={currentChat}
+                    onSaveChat={saveCurrentChat}
                   />
                 </CardContent>
               </Card>

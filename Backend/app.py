@@ -1,5 +1,7 @@
 import os
 import logging
+import datetime
+import requests
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
@@ -14,7 +16,14 @@ from langchain_groq import ChatGroq
 
 # Initialize Flask app
 app = Flask(__name__)
-CORS(app, resources={r"/api/*": {"origins": "http://localhost:5173"}})
+# Configure CORS with explicit support for methods and headers
+CORS(app, resources={
+    r"/api/*": {
+        "origins": "http://localhost:5173",
+        "methods": ["GET", "POST", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Authorization"]
+    }
+})
 
 # Load environment variables
 load_dotenv()
@@ -121,8 +130,11 @@ def get_conversation_chain(vectorstore):
         return None
 
 # Endpoint to upload and process PDFs
-@app.route('/api/upload', methods=['POST'])
+@app.route('/api/upload', methods=['POST', 'OPTIONS'])
 def upload_pdfs():
+    if request.method == 'OPTIONS':
+        return jsonify({}), 200  # Handle CORS preflight request
+    
     global conversation, chat_history
     logging.info("Received upload request")
     chat_history = []
@@ -174,8 +186,11 @@ def upload_pdfs():
                 logging.error(f"Error removing file {file_path}: {e}")
 
 # Endpoint to handle user questions
-@app.route('/api/ask', methods=['POST'])
+@app.route('/api/ask', methods=['POST', 'OPTIONS'])
 def ask_question():
+    if request.method == 'OPTIONS':
+        return jsonify({}), 200  # Handle CORS preflight request
+    
     global conversation, chat_history
     logging.info("Received question request")
     
@@ -184,30 +199,75 @@ def ask_question():
         return jsonify({'error': 'No documents processed yet'}), 400
     
     data = request.get_json()
-    if not data or 'question' not in data:
-        logging.error("No question provided")
-        return jsonify({'error': 'No question provided'}), 400
+    if not data or 'question' not in data or 'token' not in data:
+        logging.error("No question or token provided")
+        return jsonify({'error': 'No question or token provided'}), 400
     
     user_question = data['question']
+    token = data['token']  # JWT from frontend
     
     try:
-        response = conversation({'question': user_question})
+        # Add system message to format response with markdown
+        formatted_question = {
+            "system": "Format your response using markdown with bold titles, proper line breaks, bullet points, numbered lists, and code blocks where appropriate.",
+            "human": user_question
+        }
+        
+        response = conversation({
+            'question': f"{formatted_question['system']}\n\nUser Question: {formatted_question['human']}"
+        })
         chat_history = response['chat_history']
         
         formatted_history = []
         for i, message in enumerate(chat_history):
             role = 'user' if i % 2 == 0 else 'bot'
-            formatted_history.append({'role': role, 'content': message.content})
+            content = message.content
+            
+            # For user messages, only keep the actual question (remove system prompt)
+            if role == 'user':
+                content = user_question
+                
+            formatted_history.append({
+                'role': role,
+                'content': content,
+                'timestamp': str(datetime.datetime.now())
+            })
         
-        logging.info("Question processed successfully")
-        return jsonify({'chat_history': formatted_history}), 200
+        # Send chat history to Node.js backend
+        node_backend_url = "http://localhost:3000/api/chats/save"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}"
+        }
+        payload = {
+            "history": formatted_history,
+            "chatId": data.get('chatId')  # Optional: include chatId if provided
+        }
+        
+        node_response = requests.post(node_backend_url, json=payload, headers=headers)
+        if node_response.status_code != 200:
+            logging.error(f"Failed to save chat to Node.js backend: {node_response.text}")
+            return jsonify({'error': 'Failed to save chat history'}), 500
+        
+        logging.info("Question processed and chat saved successfully")
+        return jsonify({
+            'chat_history': formatted_history,
+            'chatId': node_response.json().get('chatId'),
+            'metadata': {
+                'processed_at': str(datetime.datetime.now()),
+                'has_markdown': True
+            }
+        }), 200
     except Exception as e:
         logging.error(f"Error processing question: {e}")
         return jsonify({'error': str(e)}), 500
 
 # Health check endpoint
-@app.route('/api/health', methods=['GET'])
+@app.route('/api/health', methods=['GET', 'OPTIONS'])
 def health():
+    if request.method == 'OPTIONS':
+        return jsonify({}), 200  # Handle CORS preflight request
+    
     logging.info("Health check requested")
     return jsonify({'status': 'healthy'}), 200
 

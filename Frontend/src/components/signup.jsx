@@ -1,23 +1,30 @@
-import { useState } from "react"
+"use client"
+
+import { useState, useContext, use } from "react"
 import { Link, useNavigate } from "react-router-dom"
 import { ArrowLeft, FileText, Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
+import { AuthContext } from "@/context/authcontext"
+import useAuthRedirect from "@/context/useauthredirect"
+
 
 export default function SignupPage() {
+  useAuthRedirect();
+  const [name, setName] = useState("")
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState("")
-  const navigate = useNavigate()
+  const { login } = useContext(AuthContext) // Use AuthContext
 
   const handleSignup = async (e) => {
     e.preventDefault()
     setError("")
 
-    if (!email || !password) {
+    if (!name || !email || !password) {
       setError("Please fill in all fields")
       return
     }
@@ -25,19 +32,27 @@ export default function SignupPage() {
     setIsLoading(true)
 
     try {
-      // Simulate API call
-      setTimeout(() => {
-        setIsLoading(false)
-        navigate("/dashboard")
-      }, 1500)
-    } catch (error) {
-      setIsLoading(false)
-      setError("Signup failed. Please try again.")
-    }
-  }
+      const response = await fetch("http://localhost:3000/api/auth/register", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ name, email, password }),
+      })
 
-  const handleManualRoute = () => {
-    navigate("/dashboard")
+      const data = await response.json()
+
+      if (response.ok) {
+        // Use AuthContext login to store token in cookie and set authData
+        login(data.token)
+      } else {
+        setError(data.message || "Signup failed. Please try again.")
+      }
+    } catch (error) {
+      setError("Network error. Please try again.")
+    } finally {
+      setIsLoading(false)
+    }
   }
 
   return (
@@ -63,6 +78,20 @@ export default function SignupPage() {
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSignup} className="space-y-6">
+            <div className="space-y-3">
+              <Label htmlFor="name" className="text-sm font-medium dark:text-gray-200">
+                Name
+              </Label>
+              <Input
+                id="name"
+                type="text"
+                placeholder="Your name"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                className="w-full rounded-lg bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-700 focus:ring-2 focus:ring-primary/50 transition-all duration-300"
+                required
+              />
+            </div>
             <div className="space-y-3">
               <Label htmlFor="email" className="text-sm font-medium dark:text-gray-200">
                 Email

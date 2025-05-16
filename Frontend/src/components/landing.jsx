@@ -1,8 +1,9 @@
 import { Link } from "react-router-dom"
 import { ArrowRight, FileText, MessageSquare, Shield, Zap } from "lucide-react"
 import { Button } from "@/components/ui/button"
-
+import useAuthRedirect from "@/context/useauthredirect";
 export default function LandingPage() {
+  useAuthRedirect();
   return (
     <div className="min-h-screen flex flex-col">
       <header className="border-b bg-white/80 dark:bg-gray-950/80 backdrop-blur-md sticky top-0 z-50 transition-all duration-300">

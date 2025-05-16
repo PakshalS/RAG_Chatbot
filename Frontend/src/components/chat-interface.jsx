@@ -6,6 +6,45 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogTrigger } from "@/components/ui/dialog"
 import { Label } from "@/components/ui/label"
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+
+// Markdown message component
+const MarkdownMessage = ({ content }) => {
+  return (
+    <div className="prose prose-sm dark:prose-invert max-w-none">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          h1: ({node, ...props}) => <h1 style={{fontSize: '1.5em', fontWeight: 'bold', marginBottom: '0.5em'}} {...props} />,
+          h2: ({node, ...props}) => <h2 style={{fontSize: '1.3em', fontWeight: 'bold', marginBottom: '0.5em'}} {...props} />,
+          h3: ({node, ...props}) => <h3 style={{fontSize: '1.1em', fontWeight: 'bold', marginBottom: '0.5em'}} {...props} />,
+          p: ({node, ...props}) => <p style={{marginBottom: '1em', whiteSpace: 'pre-wrap'}} {...props} />,
+          ul: ({node, ...props}) => <ul style={{listStyle: 'disc', marginLeft: '1em', marginBottom: '1em'}} {...props} />,
+          ol: ({node, ...props}) => <ol style={{listStyle: 'decimal', marginLeft: '1em', marginBottom: '1em'}} {...props} />,
+          li: ({node, ...props}) => <li style={{marginBottom: '0.5em'}} {...props} />,
+          strong: ({node, ...props}) => <strong style={{fontWeight: 'bold'}} {...props} />,
+          code: ({node, inline, ...props}) => 
+            inline ? (
+              <code style={{backgroundColor: 'rgba(0,0,0,0.1)', padding: '0.2em 0.4em', borderRadius: '3px'}} {...props} />
+            ) : (
+              <pre style={{
+                backgroundColor: 'rgba(0,0,0,0.1)',
+                padding: '1em',
+                borderRadius: '5px',
+                overflowX: 'auto',
+                marginBottom: '1em'
+              }}>
+                <code {...props} />
+              </pre>
+            )
+        }}
+      >
+        {content}
+      </ReactMarkdown>
+    </div>
+  )
+}
 
 export default function ChatInterface({
   apiStatus,
@@ -13,8 +52,9 @@ export default function ChatInterface({
   chatHistory,
   setChatHistory,
   setErrorMessage,
-  onSaveChat,
+  onAskQuestion,
   currentChat,
+  onSaveChat,
 }) {
   const [question, setQuestion] = useState("")
   const [isLoading, setIsLoading] = useState(false)
@@ -41,33 +81,12 @@ export default function ChatInterface({
   const handleAsk = async () => {
     if (!question.trim()) return
 
-    const userMessage = { role: "user", content: question }
-    setChatHistory([...chatHistory, userMessage])
     setIsLoading(true)
-
     try {
-      const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 10000) // 10s timeout
-      const response = await fetch("http://localhost:5000/api/ask", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: question.trim() }),
-        signal: controller.signal,
-      })
-      clearTimeout(timeoutId)
-
-      const data = await response.json()
-
-      if (response.ok) {
-        setChatHistory(data.chat_history)
-      } else {
-        setErrorMessage(data.error || "Failed to get response")
-        setChatHistory([...chatHistory, userMessage])
-      }
+      // Use onAskQuestion prop to handle the API call with JWT token
+      await onAskQuestion(question.trim())
     } catch (error) {
-      const errorMsg = error.name === "AbortError" ? "Request timed out" : "Network error. Please try again."
-      setErrorMessage(errorMsg)
-      setChatHistory([...chatHistory, userMessage])
+      setErrorMessage("Failed to process question")
     } finally {
       setIsLoading(false)
       setQuestion("")
@@ -81,18 +100,53 @@ export default function ChatInterface({
     }
   }
 
-  const handleSaveChat = () => {
+  const handleSaveChat = async () => {
     if (!chatName.trim()) {
       setErrorMessage("Please enter a chat name")
       return
     }
 
-    onSaveChat(chatName)
-    setDialogOpen(false)
+    if (chatHistory.length === 0) {
+      setErrorMessage("No chat history to save")
+      return
+    }
+
+    try {
+      const token = localStorage.getItem("token")
+      if (!token) {
+        setErrorMessage("Please log in to save chats")
+        return
+      }
+
+      const response = await fetch("http://localhost:3000/api/chats/save", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          chatId: currentChat?.chatId, // Send existing chatId if available
+          chatName, // Send custom chat name
+          history: chatHistory, // Send chat history
+        }),
+      })
+
+      if (response.ok) {
+        setDialogOpen(false)
+        // Trigger parent to refresh chat list
+        onSaveChat(chatHistory)
+      } else {
+        const errorData = await response.json()
+        setErrorMessage(errorData.message || "Failed to save chat")
+      }
+    } catch (error) {
+      setErrorMessage("Failed to save chat due to a network error")
+    }
   }
 
   const clearChat = () => {
     setChatHistory([])
+    setChatName(`Chat ${new Date().toLocaleString()}`)
   }
 
   const isInputDisabled = apiStatus !== "healthy" || uploadStatus !== "success" || isLoading
@@ -119,7 +173,11 @@ export default function ChatInterface({
                     : "bg-card border border-border shadow-sm"
                 }`}
               >
-                {message.content}
+                {message.role === "bot" ? (
+                  <MarkdownMessage content={message.content} />
+                ) : (
+                  <div style={{whiteSpace: 'pre-wrap'}}>{message.content}</div>
+                )}
               </div>
             </div>
           ))
